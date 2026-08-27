@@ -8,9 +8,9 @@ local orderId = ARGV[3]
 
 -- 2.数据key
 -- 2.1.库存key
-local stockKey = 'seckill:stock:' .. voucherId
+local stockKey = 'flash:stock:' .. voucherId
 -- 2.2.订单key
-local orderKey = 'seckill:order:' .. voucherId
+local orderKey = 'flash:order:' .. voucherId
 
 -- 3.脚本业务
 -- 3.1.判断库存是否充足 get stockKey

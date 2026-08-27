@@ -2,7 +2,7 @@ server:
   port: 8081
 spring:
   application:
-    name: hmdp
+    name: locallife
   datasource:
     driver-class-name: com.mysql.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&serverTimezone=UTC
@@ -21,15 +21,15 @@ spring:
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:
-  type-aliases-package: com.hmdp.entity # 别名扫描包
+  type-aliases-package: com.llp.entity # 别名扫描包
 logging:
   level:
-    com.hmdp: debug
+    com.llp: debug
   pattern:
     dateformat: mm:ss.SSS
 
 # ============ 自定义配置（新增） ============
-hmdp:
+locallife:
   # 图片上传目录，对应 nginx 静态资源目录 html/hmdp/imgs
   upload-dir: C:/Users/joker/Desktop/changeheimadianping/nginx-1.18.0/html/hmdp/imgs/
 
@@ -37,10 +37,18 @@ hmdp:
 agent:
   llm:
     # 是否启用真实大模型对话（兼容 OpenAI / ChatGPT 接口）。false 时使用离线规则对话，零外部依赖。
-    enabled: false
+    enabled: true
     # 大模型接口地址，例如 https://api.openai.com/v1
-    base-url:
+    base-url: https://api.deepseek.com
     # 大模型 API Key
-    api-key:
+    api-key: sk-7121cfcbe9bc4bcd9fb3d370f0de5c28
     # 模型名称
-    model: gpt-3.5-turbo
+    model: deepseek-v4-flash
+
+  # 接口限流（防刷）：按会话/用户维度限制调用频率，保护大模型接口不被滥用
+  rate-limit:
+    enabled: true
+    # 时间窗口内允许的最大请求数
+    max-requests: 10
+    # 时间窗口（秒）
+    window-seconds: 60
