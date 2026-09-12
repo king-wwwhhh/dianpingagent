@@ -15,4 +15,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 public interface IVoucherOrderService extends IService<VoucherOrder> {
 
     Result seckillVoucher(Long voucherId);
+
+    /** 查询当前登录用户的订单列表（含券与商户信息） */
+    Result queryMyOrders();
 }

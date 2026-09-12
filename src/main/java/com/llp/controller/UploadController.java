@@ -47,6 +47,24 @@ public class UploadController {
         return Result.ok();
     }
 
+    @PostMapping("icon")
+    public Result uploadIcon(@RequestParam("file") MultipartFile image) {
+        try {
+            String originalFilename = image.getOriginalFilename();
+            String suffix = StrUtil.subAfter(originalFilename, ".", true);
+            String fileName = UUID.randomUUID().toString() + "." + suffix;
+            File dir = new File(uploadDir + "icons");
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            image.transferTo(new File(dir, fileName));
+            // 返回前端可直接访问的相对路径
+            return Result.ok("/imgs/icons/" + fileName);
+        } catch (IOException e) {
+            throw new RuntimeException("头像上传失败", e);
+        }
+    }
+
     private String createNewFileName(String originalFilename) {
         // 获取后缀
         String suffix = StrUtil.subAfter(originalFilename, ".", true);

@@ -48,7 +48,7 @@ public class QueryShopsTool implements AgentTool {
 
         if (typeId != null) {
             // 按分类查询（无坐标，默认第一页）
-            Result result = shopService.queryShopByType(typeId.intValue(), 1, null, null);
+            Result result = shopService.queryShopByType(typeId.intValue(), 1, null, null, null);
             if (result.getData() instanceof List) {
                 shops = (List<Shop>) result.getData();
             } else {

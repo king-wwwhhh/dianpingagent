@@ -84,6 +84,12 @@
             <artifactId>redisson</artifactId>
             <version>3.13.6</version>
         </dependency>
+        <!--kafka：替代 Redis Stream 作为秒杀异步下单消息队列-->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+            <version>2.5.13.RELEASE</version>
+        </dependency>
     </dependencies>
 
     <build>

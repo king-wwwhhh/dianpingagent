@@ -35,4 +35,14 @@ public class FollowController {
     public Result followCommons(@PathVariable("id") Long id){
         return followService.followCommons(id);
     }
+
+    @GetMapping("/fans")
+    public Result fans() {
+        return followService.queryFans();
+    }
+
+    @GetMapping("/follows")
+    public Result follows() {
+        return followService.queryFollows();
+    }
 }

@@ -18,6 +18,30 @@ spring:
         max-idle: 10
         min-idle: 1
         time-between-eviction-runs: 10s
+  # ============ Kafka 消息队列（替代 Redis Stream 实现秒杀异步下单） ============
+  kafka:
+    bootstrap-servers: localhost:9092
+    # 即使 Kafka broker 暂时不可用，也不阻塞应用启动（发送侧已退化为同步落库）
+    admin:
+      auto-create: false
+      fail-fast: false
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      retries: 3
+      acks: 1
+      properties:
+        linger.ms: 5
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      group-id: seckill-order-group
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+    listener:
+      # broker 未启动时不要让应用启动失败
+      missing-topics-fatal: false
+      ack-mode: record
   jackson:
     default-property-inclusion: non_null # JSON处理时忽略非空字段
 mybatis-plus:

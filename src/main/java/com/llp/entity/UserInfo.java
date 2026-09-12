@@ -30,7 +30,10 @@ public class UserInfo implements Serializable {
     /**
      * 主键，用户id
      */
-    @TableId(value = "user_id", type = IdType.AUTO)
+    // user_id 是关联到 tb_user.id 的逻辑主键，由业务层显式写入（非数据库自增），
+    // 因此必须用 IdType.INPUT。若用 IdType.AUTO，MyBatis-Plus 在 INSERT 时会省略该列，
+    // 而 tb_user_info.user_id 没有默认值，导致 "Field 'user_id' doesn't have a default value" 的写入失败。
+    @TableId(value = "user_id", type = IdType.INPUT)
     private Long userId;
 
     /**

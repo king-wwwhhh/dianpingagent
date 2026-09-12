@@ -9,6 +9,7 @@ import com.llp.mapper.ShopMapper;
 import com.llp.service.IShopService;
 import com.llp.utils.CacheClient;
 import com.llp.utils.SystemConstants;
+import lombok.var;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
 import org.springframework.data.geo.GeoResults;
@@ -78,15 +79,11 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     @Override
-    public Result queryShopByType(Integer typeId, Integer current, Double x, Double y) {
+    public Result queryShopByType(Integer typeId, Integer current, Double x, Double y, String sortBy) {
         // 1.判断是否需要根据坐标查询
         if (x == null || y == null) {
             // 不需要坐标查询，按数据库查询
-            Page<Shop> page = query()
-                    .eq("type_id", typeId)
-                    .page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE));
-            // 返回数据
-            return Result.ok(page.getRecords());
+            return Result.ok(queryByTypeFromDb(typeId, current, sortBy));
         }
 
         // 2.计算分页参数
@@ -95,16 +92,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
         // 3.查询redis、按照距离排序、分页。结果：shopId、distance
         String key = SHOP_GEO_KEY + typeId;
-        GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo() // GEOSEARCH key BYLONLAT x y BYRADIUS 10 WITHDISTANCE
-                .search(
-                        key,
-                        GeoReference.fromCoordinate(x, y),
-                        new Distance(5000),
-                        RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(end)
-                );
+        GeoResults<RedisGeoCommands.GeoLocation<String>> results;
+        try {
+            results = stringRedisTemplate.opsForGeo() // GEOSEARCH key BYLONLAT x y BYRADIUS 10 WITHDISTANCE
+                    .search(
+                            key,
+                            GeoReference.fromCoordinate(x, y),
+                            new Distance(5000),
+                            RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(end)
+                    );
+        } catch (Exception e) {
+            // Redis 异常时降级为数据库查询，保证页面始终能展示数据
+            log.warn("GEO 查询失败，降级为数据库查询：" + e.getMessage());
+            return Result.ok(queryByTypeFromDb(typeId, current, sortBy));
+        }
         // 4.解析出id
         if (results == null) {
-            return Result.ok(Collections.emptyList());
+            // GEO 数据为空（如 Redis 未预热），降级为数据库查询
+            return Result.ok(queryByTypeFromDb(typeId, current, sortBy));
         }
         List<GeoResult<RedisGeoCommands.GeoLocation<String>>> list = results.getContent();
         if (list.size() <= from) {
@@ -128,7 +133,34 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         for (Shop shop : shops) {
             shop.setDistance(distanceMap.get(shop.getId().toString()).getValue());
         }
-        // 6.返回
+        // 6.按人气/评分排序（距离排序已隐含在 GEO 结果中）
+        sortShops(shops, sortBy);
+        // 7.返回
         return Result.ok(shops);
+    }
+
+    /** 数据库兜底查询：当 GEO 数据缺失或异常时使用 */
+    private List<Shop> queryByTypeFromDb(Integer typeId, Integer current, String sortBy) {
+        var query = query().eq("type_id", typeId);
+        if ("comments".equals(sortBy)) {
+            query.orderByDesc("comments");
+        } else if ("score".equals(sortBy)) {
+            query.orderByDesc("score");
+        }
+        return query.page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE)).getRecords();
+    }
+
+    /** 按人气/评分对结果排序 */
+    private void sortShops(List<Shop> shops, String sortBy) {
+        if (shops == null || shops.isEmpty()) {
+            return;
+        }
+        if ("comments".equals(sortBy)) {
+            shops.sort((a, b) -> Integer.compare(b.getComments() == null ? 0 : b.getComments(),
+                    a.getComments() == null ? 0 : a.getComments()));
+        } else if ("score".equals(sortBy)) {
+            shops.sort((a, b) -> Integer.compare(b.getScore() == null ? 0 : b.getScore(),
+                    a.getScore() == null ? 0 : a.getScore()));
+        }
     }
 }

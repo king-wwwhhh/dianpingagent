@@ -16,7 +16,9 @@ import org.springframework.stereotype.Service;
 import javax.annotation.Resource;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -93,5 +95,38 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
                 .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
                 .collect(Collectors.toList());
         return Result.ok(users);
+    }
+
+    @Override
+    public Result queryFans() {
+        // 粉丝：别人关注了我（follow_user_id = 当前用户），取其 user_id
+        Long userId = UserHolder.getUser().getId();
+        List<Follow> follows = query().eq("follow_user_id", userId).list();
+        return Result.ok(toUserDTOs(follows, Follow::getUserId));
+    }
+
+    @Override
+    public Result queryFollows() {
+        // 关注：我关注了别人（user_id = 当前用户），取其 follow_user_id
+        Long userId = UserHolder.getUser().getId();
+        List<Follow> follows = query().eq("user_id", userId).list();
+        return Result.ok(toUserDTOs(follows, Follow::getFollowUserId));
+    }
+
+    /** 从关注关系中提取对端用户并转换为 UserDTO */
+    private List<UserDTO> toUserDTOs(List<Follow> follows, Function<Follow, Long> idExtractor) {
+        if (follows == null || follows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Long> ids = follows.stream()
+                .map(idExtractor)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return userService.listByIds(ids).stream()
+                .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
+                .collect(Collectors.toList());
     }
 }

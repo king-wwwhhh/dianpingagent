@@ -1,37 +1,46 @@
 package com.llp.service.impl;
 
-import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.llp.config.KafkaConfig;
 import com.llp.dto.Result;
+import com.llp.dto.SeckillOrderMessage;
+import com.llp.entity.SeckillVoucher;
+import com.llp.entity.Shop;
+import com.llp.entity.Voucher;
 import com.llp.entity.VoucherOrder;
 import com.llp.mapper.VoucherOrderMapper;
 import com.llp.service.ISeckillVoucherService;
+import com.llp.service.IShopService;
 import com.llp.service.IVoucherOrderService;
+import com.llp.service.IVoucherService;
+import com.llp.utils.RedisConstants;
 import com.llp.utils.RedisIdWorker;
 import com.llp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.redis.connection.stream.*;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
+import org.springframework.util.concurrent.ListenableFuture;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
 import javax.annotation.Resource;
-import java.time.Duration;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * <p>
- * 服务实现类
+ * 服务实现类（秒杀异步下单：基于 Kafka 消息队列）
  * </p>
  *
  * @author 虎哥
@@ -45,11 +54,20 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private ISeckillVoucherService seckillVoucherService;
 
     @Resource
+    private com.llp.service.IVoucherService voucherService;
+    @Resource
+    private com.llp.service.IShopService shopService;
+
+    @Resource
     private RedisIdWorker redisIdWorker;
     @Resource
     private RedissonClient redissonClient;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    /** Kafka 生产者模板 */
+    @Resource
+    private KafkaTemplate<String, String> kafkaTemplate;
 
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
 
@@ -59,96 +77,75 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
-    private ExecutorService SECKILL_ORDER_EXECUTOR;
-    private volatile boolean running = true;
+    @Override
+    public Result seckillVoucher(Long voucherId) {
+        Long userId = UserHolder.getUser().getId();
+        long orderId = redisIdWorker.nextId("order");
+        // 0.库存未预热时按需预热，避免 Redis 重启后秒杀 500
+        preheatStockIfAbsent(voucherId);
+        // 1.执行lua脚本（原子：校验库存 + 一人一单 + 扣库存 + 记录下单用户）
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Collections.emptyList(),
+                voucherId.toString(), userId.toString(), String.valueOf(orderId)
+        );
+        int r = result == null ? 1 : result.intValue();
+        // 2.判断结果是否为0
+        if (r != 0) {
+            // 2.1.不为0 ，代表没有购买资格
+            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
+        }
+        // 3.发送下单消息到 Kafka，由消费者异步落库
+        SeckillOrderMessage message = new SeckillOrderMessage(orderId, userId, voucherId);
+        sendOrderMessage(message);
+        // 4.返回订单id（落库在消费者侧异步完成）
+        return Result.ok(orderId);
+    }
 
-    @PostConstruct
-    private void init() {
-        // 创建消费者组（不存在时自动创建，避免 XREADGROUP 报 NOGROUP 错误）
+    /**
+     * 发送秒杀下单消息到 Kafka。
+     * 若 broker 不可用导致发送失败，则退化为同步落库，保证下单功能始终可用。
+     */
+    private void sendOrderMessage(SeckillOrderMessage message) {
         try {
-            stringRedisTemplate.execute((RedisCallback<Object>) connection -> {
-                connection.execute("XGROUP", "CREATE".getBytes(), "stream.orders".getBytes(), "g1".getBytes(), "0".getBytes(), "MKSTREAM".getBytes());
-                return null;
-            });
+            ListenableFuture<SendResult<String, String>> future =
+                    kafkaTemplate.send(KafkaConfig.SECKILL_ORDER_TOPIC, JSONUtil.toJsonStr(message));
+            future.addCallback(
+                    sendResult -> {
+                        // 发送成功，订单将由 Kafka 消费者异步落库
+                    },
+                    ex -> {
+                        // 发送失败（如 broker 不可用），退化为同步落库，保证下单可用
+                        log.error("Kafka 发送下单消息失败，退化为同步落库：{}", ex.getMessage());
+                        createVoucherOrder(message);
+                    }
+            );
         } catch (Exception e) {
-            log.info("消费组已存在，跳过创建：{}", e.getMessage());
-        }
-        SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
-        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
-    }
-
-    @PreDestroy
-    private void destroy() {
-        running = false;
-        if (SECKILL_ORDER_EXECUTOR != null) {
-            SECKILL_ORDER_EXECUTOR.shutdown();
+            log.error("Kafka 发送下单消息异常，退化为同步落库", e);
+            createVoucherOrder(message);
         }
     }
 
-    private class VoucherOrderHandler implements Runnable {
-
-        @Override
-        public void run() {
-            while (running) {
-                try {
-                    // 1.获取消息队列中的订单信息 XREADGROUP GROUP g1 c1 COUNT 1 BLOCK 2000 STREAMS s1 >
-                    List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1"),
-                            StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
-                            StreamOffset.create("stream.orders", ReadOffset.lastConsumed())
-                    );
-                    // 2.判断订单信息是否为空
-                    if (list == null || list.isEmpty()) {
-                        // 如果为null，说明没有消息，继续下一次循环
-                        continue;
-                    }
-                    // 解析数据
-                    MapRecord<String, Object, Object> record = list.get(0);
-                    Map<Object, Object> value = record.getValue();
-                    VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    // 3.创建订单
-                    createVoucherOrder(voucherOrder);
-                    // 4.确认消息 XACK
-                    stringRedisTemplate.opsForStream().acknowledge("stream.orders", "g1", record.getId());
-                } catch (Exception e) {
-                    log.error("处理订单异常", e);
-                    handlePendingList();
-                }
-            }
-        }
-
-        private void handlePendingList() {
-            while (running) {
-                try {
-                    // 1.获取pending-list中的订单信息 XREADGROUP GROUP g1 c1 COUNT 1 BLOCK 2000 STREAMS s1 0
-                    List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1"),
-                            StreamReadOptions.empty().count(1),
-                            StreamOffset.create("stream.orders", ReadOffset.from("0"))
-                    );
-                    // 2.判断订单信息是否为空
-                    if (list == null || list.isEmpty()) {
-                        // 如果为null，说明没有异常消息，结束循环
-                        break;
-                    }
-                    // 解析数据
-                    MapRecord<String, Object, Object> record = list.get(0);
-                    Map<Object, Object> value = record.getValue();
-                    VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    // 3.创建订单
-                    createVoucherOrder(voucherOrder);
-                    // 4.确认消息 XACK
-                    stringRedisTemplate.opsForStream().acknowledge("stream.orders", "g1", record.getId());
-                } catch (Exception e) {
-                    log.error("处理订单异常", e);
-                }
-            }
+    /**
+     * Kafka 消费者：消费秒杀下单消息，异步创建订单落库。
+     */
+    @KafkaListener(topics = KafkaConfig.SECKILL_ORDER_TOPIC, groupId = "seckill-order-group")
+    public void consumeOrderMessage(ConsumerRecord<String, String> record) {
+        try {
+            SeckillOrderMessage message = JSONUtil.toBean(record.value(), SeckillOrderMessage.class);
+            createVoucherOrder(message);
+        } catch (Exception e) {
+            // 捕获异常，避免消费者反复重试导致消息阻塞；订单幂等已保证不重复创建
+            log.error("消费下单消息失败，消息内容={}", record.value(), e);
         }
     }
 
-    private void createVoucherOrder(VoucherOrder voucherOrder) {
-        Long userId = voucherOrder.getUserId();
-        Long voucherId = voucherOrder.getVoucherId();
+    /**
+     * 创建秒杀订单（被 Kafka 消费者与降级逻辑复用）。
+     */
+    private void createVoucherOrder(SeckillOrderMessage message) {
+        Long userId = message.getUserId();
+        Long voucherId = message.getVoucherId();
         // 创建锁对象
         RLock redisLock = redissonClient.getLock("lock:order:" + userId);
         // 尝试获取锁
@@ -182,6 +179,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             }
 
             // 7.创建订单
+            VoucherOrder voucherOrder = new VoucherOrder();
+            voucherOrder.setId(message.getOrderId());
+            voucherOrder.setUserId(userId);
+            voucherOrder.setVoucherId(voucherId);
             save(voucherOrder);
         } finally {
             // 释放锁
@@ -189,24 +190,56 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     }
 
-    @Override
-    public Result seckillVoucher(Long voucherId) {
-        Long userId = UserHolder.getUser().getId();
-        long orderId = redisIdWorker.nextId("order");
-        // 1.执行lua脚本
-        Long result = stringRedisTemplate.execute(
-                SECKILL_SCRIPT,
-                Collections.emptyList(),
-                voucherId.toString(), userId.toString(), String.valueOf(orderId)
-        );
-        int r = result.intValue();
-        // 2.判断结果是否为0
-        if (r != 0) {
-            // 2.1.不为0 ，代表没有购买资格
-            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
+    /**
+     * 库存未预热时，从数据库加载并写入 Redis，避免 Redis 重启后秒杀直接 500。
+     */
+    private void preheatStockIfAbsent(Long voucherId) {
+        String key = RedisConstants.SECKILL_STOCK_KEY + voucherId;
+        if (Boolean.FALSE.equals(stringRedisTemplate.hasKey(key))) {
+            SeckillVoucher sv = seckillVoucherService.getById(voucherId);
+            if (sv != null && sv.getStock() != null) {
+                stringRedisTemplate.opsForValue().set(key, sv.getStock().toString());
+            }
         }
-        // 3.返回订单id
-        return Result.ok(orderId);
     }
 
+    @Override
+    public Result queryMyOrders() {
+        Long userId = UserHolder.getUser().getId();
+        // 1.查询当前用户的订单
+        List<VoucherOrder> orders = query().eq("user_id", userId).orderByDesc("create_time").list();
+        if (orders == null || orders.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+        // 2.批量查询关联优惠券，得到券标题/面额/所属商户
+        List<Long> voucherIds = orders.stream().map(VoucherOrder::getVoucherId).collect(Collectors.toList());
+        List<Voucher> vouchers = voucherService.listByIds(voucherIds);
+        Map<Long, Voucher> voucherMap = vouchers.stream()
+                .collect(Collectors.toMap(Voucher::getId, v -> v, (a, b) -> a));
+        // 3.批量查询关联商户名称
+        List<Long> shopIds = vouchers.stream().map(Voucher::getShopId)
+                .filter(Objects::nonNull).collect(Collectors.toList());
+        Map<Long, String> shopNameMap = new HashMap<>();
+        if (!shopIds.isEmpty()) {
+            List<Shop> shops = shopService.listByIds(shopIds);
+            shops.forEach(s -> shopNameMap.put(s.getId(), s.getName()));
+        }
+        // 4.组装前端展示结构
+        List<Map<String, Object>> result = orders.stream().map(o -> {
+            Map<String, Object> m = new HashMap<>(8);
+            m.put("id", o.getId());
+            m.put("status", o.getStatus());
+            m.put("payType", o.getPayType());
+            m.put("createTime", o.getCreateTime());
+            Voucher v = voucherMap.get(o.getVoucherId());
+            if (v != null) {
+                m.put("title", v.getTitle());
+                m.put("actualValue", v.getActualValue());
+                m.put("payValue", v.getPayValue());
+                m.put("shopName", shopNameMap.get(v.getShopId()));
+            }
+            return m;
+        }).collect(Collectors.toList());
+        return Result.ok(result);
+    }
 }

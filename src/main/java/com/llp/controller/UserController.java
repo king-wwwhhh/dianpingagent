@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -107,6 +108,50 @@ public class UserController {
         UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
         // 返回
         return Result.ok(userDTO);
+    }
+
+    /**
+     * 修改个人基础资料（昵称、头像）
+     */
+    @PutMapping("")
+    public Result updateUser(@RequestBody User user, HttpServletRequest request) {
+        Long userId = UserHolder.getUser().getId();
+        user.setId(userId);
+        userService.updateById(user);
+        // 同步更新会话中的昵称/头像
+        UserDTO holder = UserHolder.getUser();
+        if (user.getNickName() != null) {
+            holder.setNickName(user.getNickName());
+        }
+        if (user.getIcon() != null) {
+            holder.setIcon(user.getIcon());
+        }
+        // 同步更新 Redis 登录会话中的昵称/头像。
+        // 否则 RefreshTokenInterceptor 每次请求都会从 Redis 登录快照重建 UserDTO，
+        // 导致 /user/me 在重新登录前一直返回旧的昵称/头像，前端编辑后无法立即生效。
+        String token = request.getHeader("authorization");
+        if (StrUtil.isNotBlank(token)) {
+            String key = RedisConstants.LOGIN_USER_KEY + token;
+            if (user.getNickName() != null) {
+                stringRedisTemplate.opsForHash().put(key, "nickName", user.getNickName());
+            }
+            if (user.getIcon() != null) {
+                stringRedisTemplate.opsForHash().put(key, "icon", user.getIcon());
+            }
+            stringRedisTemplate.expire(key, RedisConstants.LOGIN_USER_TTL, TimeUnit.MINUTES);
+        }
+        return Result.ok();
+    }
+
+    /**
+     * 修改个人详细资料（个人简介、性别、城市、生日）
+     */
+    @PutMapping("/info")
+    public Result updateUserInfo(@RequestBody UserInfo info) {
+        Long userId = UserHolder.getUser().getId();
+        info.setUserId(userId);
+        userInfoService.saveOrUpdate(info);
+        return Result.ok();
     }
 
     @PostMapping("/sign")
