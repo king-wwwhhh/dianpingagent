@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
@@ -29,8 +30,15 @@ public class CacheClient {
         this.stringRedisTemplate = stringRedisTemplate;
     }
 
+    /** TTL 随机抖动比例：在基准 TTL 上叠加 [0, +20%) 的随机偏移，防缓存雪崩 */
+    private static final double TTL_JITTER_RATIO = 0.2;
+
     public void set(String key, Object value, Long time, TimeUnit unit) {
-        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value), time, unit);
+        // 随机 TTL 防雪崩：让缓存的过期时间在基准值附近错开，避免大量 key 同一时刻集体失效、
+        // 请求全部涌向数据库。抖动幅度 = 基准值 * 20% 以内的随机值。
+        long baseSeconds = unit.toSeconds(time);
+        long jitter = (long) (baseSeconds * TTL_JITTER_RATIO * ThreadLocalRandom.current().nextDouble());
+        stringRedisTemplate.opsForValue().set(key, JSONUtil.toJsonStr(value), baseSeconds + jitter, TimeUnit.SECONDS);
     }
 
     public void setWithLogicalExpire(String key, Object value, Long time, TimeUnit unit) {

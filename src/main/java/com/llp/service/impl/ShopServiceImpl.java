@@ -8,6 +8,7 @@ import com.llp.entity.Shop;
 import com.llp.mapper.ShopMapper;
 import com.llp.service.IShopService;
 import com.llp.utils.CacheClient;
+import com.llp.utils.ShopBloomFilter;
 import com.llp.utils.SystemConstants;
 import lombok.var;
 import org.springframework.data.geo.Distance;
@@ -43,9 +44,18 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private CacheClient cacheClient;
 
+    @Resource
+    private ShopBloomFilter shopBloomFilter;
+
     @Override
     public Result queryById(Long id) {
-        // 解决缓存穿透
+        // 0. 布隆过滤器防穿透（第一级）：id 一定不存在时直接拒绝，请求到不了缓存和 DB；
+        //    过滤器不可用时 fail-open 恒放行，主链路零风险
+        if (!shopBloomFilter.mightContain(id)) {
+            return Result.fail("店铺不存在！");
+        }
+
+        // 1. 空对象缓存防穿透（第二级）：兜底布隆过滤器 ~1% 的误放请求
         Shop shop = cacheClient
                 .queryWithPassThrough(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
 
@@ -60,7 +70,9 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if (shop == null) {
             return Result.fail("店铺不存在！");
         }
-        // 7.返回
+        // 2. 懒加载补充：重启预热之后新增的商铺，首次查到时补进布隆过滤器
+        shopBloomFilter.add(id);
+        // 3.返回
         return Result.ok(shop);
     }
 
