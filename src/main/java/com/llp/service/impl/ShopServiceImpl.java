@@ -1,6 +1,7 @@
 package com.llp.service.impl;
 
 import cn.hutool.core.util.StrUtil;
+import com.baomidou.mybatisplus.extension.conditions.query.QueryChainWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.llp.dto.Result;
@@ -10,7 +11,7 @@ import com.llp.service.IShopService;
 import com.llp.utils.CacheClient;
 import com.llp.utils.ShopBloomFilter;
 import com.llp.utils.SystemConstants;
-import lombok.var;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
 import org.springframework.data.geo.GeoResults;
@@ -153,7 +154,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     /** 数据库兜底查询：当 GEO 数据缺失或异常时使用 */
     private List<Shop> queryByTypeFromDb(Integer typeId, Integer current, String sortBy) {
-        var query = query().eq("type_id", typeId);
+        QueryChainWrapper<Shop> query = query().eq("type_id", typeId);
         if ("comments".equals(sortBy)) {
             query.orderByDesc("comments");
         } else if ("score".equals(sortBy)) {

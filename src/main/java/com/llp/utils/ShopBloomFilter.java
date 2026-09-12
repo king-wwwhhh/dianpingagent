@@ -5,9 +5,10 @@ import com.llp.service.IShopService;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBloomFilter;
 import org.redisson.api.RedissonClient;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
-import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 import java.util.List;
 
@@ -30,7 +31,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class ShopBloomFilter {
+public class ShopBloomFilter implements ApplicationRunner {
 
     /** Redis 中布隆过滤器的位图 key */
     private static final String BLOOM_SHOP_KEY = "bloom:shop";
@@ -50,8 +51,12 @@ public class ShopBloomFilter {
     /** 过滤器可用标志；false 时 fail-open 放行所有请求 */
     private volatile boolean available = false;
 
-    @PostConstruct
-    public void init() {
+    /**
+     * 用 ApplicationRunner 而非 @PostConstruct：预热依赖 MyBatis-Plus 完整初始化的
+     * IShopService（baseMapper 装配完成），ApplicationRunner 在容器刷新完成后执行，时序安全。
+     */
+    @Override
+    public void run(ApplicationArguments args) {
         try {
             bloomFilter = redissonClient.getBloomFilter(BLOOM_SHOP_KEY);
             // 预期插入量 + 误判率初始化位数组；应用重启后过滤器已存在时 tryInit 返回 false，继续复用

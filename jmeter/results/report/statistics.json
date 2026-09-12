@@ -1,0 +1,34 @@
+{
+  "Total" : {
+    "transaction" : "Total",
+    "sampleCount" : 291630,
+    "errorCount" : 290425,
+    "errorPct" : 99.58681,
+    "meanResTime" : 16.454946336111497,
+    "medianResTime" : 16.0,
+    "minResTime" : 1.0,
+    "maxResTime" : 99.0,
+    "pct1ResTime" : 19.0,
+    "pct2ResTime" : 20.0,
+    "pct3ResTime" : 22.0,
+    "throughput" : 9862.36050050727,
+    "receivedKBytesPerSec" : 1166.4256359380283,
+    "sentKBytesPerSec" : 2379.983705243913
+  },
+  "POST /voucher-order/seckill" : {
+    "transaction" : "POST /voucher-order/seckill",
+    "sampleCount" : 291630,
+    "errorCount" : 290425,
+    "errorPct" : 99.58681,
+    "meanResTime" : 16.454946336111497,
+    "medianResTime" : 16.0,
+    "minResTime" : 1.0,
+    "maxResTime" : 99.0,
+    "pct1ResTime" : 19.0,
+    "pct2ResTime" : 20.0,
+    "pct3ResTime" : 22.0,
+    "throughput" : 9862.36050050727,
+    "receivedKBytesPerSec" : 1166.4256359380283,
+    "sentKBytesPerSec" : 2379.983705243913
+  }
+}
