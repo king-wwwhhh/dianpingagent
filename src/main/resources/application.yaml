@@ -65,7 +65,7 @@ agent:
     # 大模型接口地址，例如 https://api.openai.com/v1
     base-url: https://api.deepseek.com
     # 大模型 API Key
-    api-key: sk-7121cfcbe9bc4bcd9fb3d370f0de5c28
+    api-key:
     # 模型名称
     model: deepseek-v4-flash
 
